@@ -19,6 +19,8 @@ import (
 
 var insidersRecreate bool
 var tmpDirRecreate string
+var containerToolRecreate string
+var localImageRecreate bool
 
 var recreateCmd = &cobra.Command{
 	Use:   "recreate",
@@ -86,21 +88,30 @@ var recreateCmd = &cobra.Command{
 			return fmt.Errorf("backup shadow entry: %w", err)
 		}
 
-		if clix.Verbose {
-			rep.Message("Backing up device broker state...")
+		// Backup enrollment state (auth-stack-aware).
+		var brokerBackupDir string
+		if cfg.AuthStack == config.AuthStackHimmelblau {
+			if clix.Verbose {
+				rep.Message("Backing up Himmelblau state...")
+			}
+			brokerBackupDir, err = provision.BackupHimmelblauState(r, cfg.RootfsPath)
+		} else {
+			if clix.Verbose {
+				rep.Message("Backing up device broker state...")
+			}
+			brokerBackupDir, err = provision.BackupDeviceBrokerState(r, cfg.RootfsPath)
 		}
-		brokerBackupDir, err := provision.BackupDeviceBrokerState(r, cfg.RootfsPath)
 		if err != nil {
-			return fmt.Errorf("backup device broker state: %w", err)
+			return fmt.Errorf("backup enrollment state: %w", err)
 		}
 		if brokerBackupDir != "" {
 			defer func() { _ = os.RemoveAll(brokerBackupDir) }()
 			if clix.Verbose {
-				rep.Message("Device broker state backed up.")
+				rep.Message("Enrollment state backed up.")
 			}
 		} else {
 			if clix.Verbose {
-				rep.Message("No device broker state found (skipping).")
+				rep.Message("No enrollment state found (skipping).")
 			}
 		}
 
@@ -113,30 +124,50 @@ var recreateCmd = &cobra.Command{
 
 		// Pull new image
 		if cmd.Flags().Changed("insiders") {
+			if cfg.AuthStack == config.AuthStackHimmelblau && insidersRecreate {
+				return fmt.Errorf("--insiders is not available for the himmelblau auth stack")
+			}
 			cfg.Insiders = insidersRecreate
 			if err := cfg.Save(root); err != nil {
 				return fmt.Errorf("save config: %w", err)
 			}
 		}
-		image := pkgversion.ImageRef(cfg.Insiders)
-		p, err := puller.Detect(r)
+		image := pkgversion.ImageRefForStack(string(cfg.AuthStack), cfg.Insiders)
+		p, err := puller.DetectByName(r, containerToolRecreate)
 		if err != nil {
 			return err
 		}
 
-		rep.Message("Pulling and extracting OCI image %s (via %s)...", image, p.Name())
 		if err := os.MkdirAll(cfg.RootfsPath, 0755); err != nil {
 			return fmt.Errorf("create rootfs dir: %w", err)
 		}
-		if err := p.PullAndExtract(r, image, cfg.RootfsPath, tmpDirRecreate); err != nil {
-			return err
+		if localImageRecreate {
+			rep.Message("Extracting local image %s (via %s)...", image, p.Name())
+			if err := p.ExtractLocal(r, image, cfg.RootfsPath, tmpDirRecreate); err != nil {
+				return err
+			}
+		} else {
+			rep.Message("Pulling and extracting OCI image %s (via %s)...", image, p.Name())
+			if err := p.PullAndExtract(r, image, cfg.RootfsPath, tmpDirRecreate); err != nil {
+				return err
+			}
 		}
 
 		// Re-provision
 		hostname, _ := os.Hostname()
 
-		if err := provision.ProvisionContainer(r, rep, cfg.RootfsPath, u.Username, os.Getuid(), os.Getgid(), hostname); err != nil {
+		if err := provision.ProvisionContainer(r, rep, cfg.RootfsPath, u.Username, os.Getuid(), os.Getgid(), hostname, cfg.AuthStack); err != nil {
 			return err
+		}
+
+		// Re-write Himmelblau configuration files after re-provision.
+		if cfg.AuthStack == config.AuthStackHimmelblau {
+			if clix.Verbose {
+				rep.Message("Writing Himmelblau configuration (domain: %s)...", cfg.HimmelblauDomain)
+			}
+			if err := provision.WriteHimmelblauConfig(r, cfg.RootfsPath, cfg.HimmelblauDomain, cfg.HimmelblauEmail, u.Username); err != nil {
+				return fmt.Errorf("write himmelblau config: %w", err)
+			}
 		}
 
 		// Restore state
@@ -149,10 +180,16 @@ var recreateCmd = &cobra.Command{
 
 		if brokerBackupDir != "" {
 			if clix.Verbose {
-				rep.Message("Restoring device broker state...")
+				rep.Message("Restoring enrollment state...")
 			}
-			if err := provision.RestoreDeviceBrokerState(r, cfg.RootfsPath, brokerBackupDir); err != nil {
-				rep.Warning("restore device broker state failed: %v", err)
+			var restoreErr error
+			if cfg.AuthStack == config.AuthStackHimmelblau {
+				restoreErr = provision.RestoreHimmelblauState(r, cfg.RootfsPath, brokerBackupDir)
+			} else {
+				restoreErr = provision.RestoreDeviceBrokerState(r, cfg.RootfsPath, brokerBackupDir)
+			}
+			if restoreErr != nil {
+				rep.Warning("restore enrollment state failed: %v", restoreErr)
 			}
 		}
 
@@ -164,5 +201,7 @@ var recreateCmd = &cobra.Command{
 func init() {
 	recreateCmd.Flags().BoolVar(&insidersRecreate, "insiders", false, "switch to the insiders channel container image")
 	recreateCmd.Flags().StringVar(&tmpDirRecreate, "tmp-dir", "", "directory for temporary files during image extraction (default: system temp dir)")
+	recreateCmd.Flags().StringVar(&containerToolRecreate, "container-tool", "", "container tool to use for image operations: podman, docker, or skopeo (default: auto-detect)")
+	recreateCmd.Flags().BoolVar(&localImageRecreate, "local-image", false, "use a locally available image instead of pulling from the registry")
 	rootCmd.AddCommand(recreateCmd)
 }

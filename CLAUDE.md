@@ -1,15 +1,24 @@
 # intuneme
 
-Go CLI tool that provisions and manages a systemd-nspawn container running Microsoft Intune on an immutable Linux host.
+Go CLI tool that provisions and manages a systemd-nspawn container running Microsoft Intune on an immutable Linux host. Supports two authentication stacks: **Intune** (Microsoft Identity Broker + Intune Portal) and **Himmelblau** (open-source Entra ID auth via [himmelblau-idm/himmelblau](https://github.com/himmelblau-idm/himmelblau)).
 
 ## Architecture
 
 The repository has two main components:
 
 - **Go CLI** (`cmd/`, `internal/`) — Responsible for container lifecycle: init, start, stop, destroy, shell. Handles host-specific setup (user creation, hostname, polkit rules) that varies per machine.
-- **Container image** (`ubuntu-intune/`) — Containerfile + build scripts + system files that define the container contents. Packages, systemd unit overrides, PAM config, static config files, and the Edge wrapper all live here.
+- **Container images** (`ubuntu-intune/`, `ubuntu-himmelblau/`) — Containerfile + build scripts + system files that define the container contents. Packages, systemd unit overrides, PAM config, static config files, and the Edge wrapper all live here. The auth stack determines which image is used.
 
-**Rule of thumb:** The Go CLI starts and stops things. The container image defines what's inside the container. If something is static and doesn't depend on the host (packages, service overrides, config files), it belongs in `ubuntu-intune/`. If it depends on the host user/UID/hostname, it stays in `internal/provision/`.
+**Rule of thumb:** The Go CLI starts and stops things. The container image defines what's inside the container. If something is static and doesn't depend on the host (packages, service overrides, config files), it belongs in the container image directory. If it depends on the host user/UID/hostname, it stays in `internal/provision/`.
+
+## Auth Stack Selection
+
+The `--auth-stack` flag on `intuneme init` selects the authentication stack:
+
+- `intune` (default) — Uses `ubuntu-intune` image with Microsoft Identity Broker, Intune Portal, and Edge.
+- `himmelblau` — Uses `ubuntu-himmelblau` image with Himmelblau daemons (`himmelblaud`, `himmelblaud-tasks`) and `himmelblau-broker` for D-Bus SSO. Edge is still available. Requires `--himmelblau-email` for user mapping.
+
+The auth stack is stored in `config.toml` as `auth_stack` and drives image selection, profile script, TPM bind-mounts, and enrollment state backup/restore paths.
 
 ## Executing commands inside the container
 

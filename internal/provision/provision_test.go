@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/frostyard/intuneme/internal/config"
 	"github.com/frostyard/std/reporter"
 )
 
@@ -43,7 +44,7 @@ func TestWriteFixups(t *testing.T) {
 	r := &mockRunner{}
 	rootfs := "/tmp/test-rootfs"
 
-	err := WriteFixups(r, rootfs, "testuser", 1000, 1000, "testhost")
+	err := WriteFixups(r, rootfs, "testuser", 1000, 1000, "testhost", config.AuthStackIntune)
 	if err != nil {
 		t.Fatalf("WriteFixups error: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestWriteFixups(t *testing.T) {
 
 func TestSetContainerPassword(t *testing.T) {
 	r := &mockRunner{}
-	err := SetContainerPassword(r, "/rootfs", "alice", "H@rdPa$$w0rd!")
+	err := SetContainerPassword(r, "/rootfs", "alice", "H@rdPa$$w0rd!", false)
 	if err != nil {
 		t.Fatalf("SetContainerPassword error: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestSetContainerPassword(t *testing.T) {
 func TestSetContainerPasswordSpecialChars(t *testing.T) {
 	// A password with a single-quote would break the old shell interpolation approach.
 	r := &mockRunner{}
-	err := SetContainerPassword(r, "/rootfs", "alice", "It'sAGr8Pass!")
+	err := SetContainerPassword(r, "/rootfs", "alice", "It'sAGr8Pass!", false)
 	if err != nil {
 		t.Fatalf("SetContainerPassword error: %v", err)
 	}

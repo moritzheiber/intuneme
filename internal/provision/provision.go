@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/frostyard/clix"
+	"github.com/frostyard/intuneme/internal/config"
 	"github.com/frostyard/intuneme/internal/runner"
 	"github.com/frostyard/intuneme/internal/sudo"
 	"github.com/frostyard/std/reporter"
@@ -16,6 +17,9 @@ import (
 
 //go:embed intuneme-profile.sh
 var intuneProfileScript []byte
+
+//go:embed himmelblau-profile.sh
+var himmelblauProfileScript []byte
 
 // sudoMkdirAll creates directories with sudo.
 func sudoMkdirAll(r runner.Runner, path string) error {
@@ -29,7 +33,7 @@ func sudoSymlink(r runner.Runner, target, link string) error {
 	return err
 }
 
-func WriteFixups(r runner.Runner, rootfsPath, user string, uid, gid int, hostname string) error {
+func WriteFixups(r runner.Runner, rootfsPath, user string, uid, gid int, hostname string, authStack config.AuthStack) error {
 	// /etc/hostname
 	if err := sudo.WriteFile(r,
 		filepath.Join(rootfsPath, "etc", "hostname"),
@@ -81,7 +85,11 @@ WantedBy=multi-user.target
 	if err := sudoMkdirAll(r, profileDir); err != nil {
 		return fmt.Errorf("mkdir profile.d: %w", err)
 	}
-	if err := sudo.WriteFile(r, filepath.Join(profileDir, "intuneme.sh"), intuneProfileScript, 0755); err != nil {
+	profileScript := intuneProfileScript
+	if authStack == config.AuthStackHimmelblau {
+		profileScript = himmelblauProfileScript
+	}
+	if err := sudo.WriteFile(r, filepath.Join(profileDir, "intuneme.sh"), profileScript, 0755); err != nil {
 		return fmt.Errorf("write profile.d/intuneme.sh: %w", err)
 	}
 
@@ -101,7 +109,10 @@ WantedBy=multi-user.target
 // SetContainerPassword sets the user's password inside the container via chpasswd.
 // Without a password, the account is locked and machinectl shell/login won't work interactively.
 // The password is passed via a temp file bound read-only into the container to avoid shell injection.
-func SetContainerPassword(r runner.Runner, rootfsPath, user, password string) error {
+// When bypassPAM is true, the password hash is generated with openssl and set via usermod -p,
+// which writes directly to /etc/shadow without invoking PAM. This is necessary for the Himmelblau
+// auth stack where PAM modules block password changes before enrollment.
+func SetContainerPassword(r runner.Runner, rootfsPath, user, password string, bypassPAM bool) error {
 	tmp, err := os.CreateTemp("", "intuneme-chpasswd-*")
 	if err != nil {
 		return fmt.Errorf("create chpasswd temp file: %w", err)
@@ -114,6 +125,21 @@ func SetContainerPassword(r runner.Runner, rootfsPath, user, password string) er
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close chpasswd temp file: %w", err)
+	}
+
+	if bypassPAM {
+		// Generate hash and set via usermod -p to bypass PAM entirely.
+		// The password file is bound read-only; a shell pipeline reads it,
+		// hashes it with openssl, and passes the hash to usermod.
+		script := fmt.Sprintf(
+			`hash=$(head -1 /run/chpasswd-input | cut -d: -f2 | openssl passwd -6 -stdin) && usermod -p "$hash" %s`,
+			user,
+		)
+		return r.RunAttached("sudo", "systemd-nspawn", "--console=pipe",
+			"--bind-ro="+tmp.Name()+":/run/chpasswd-input",
+			"-D", rootfsPath,
+			"bash", "-c", script,
+		)
 	}
 
 	return r.RunAttached("sudo", "systemd-nspawn", "--console=pipe",
@@ -266,15 +292,32 @@ func FindHostRenderGID() (int, error) {
 	return findGroupGID("/etc/group", "render")
 }
 
+// FindHostTSSGID returns the GID of the host's "tss" group, or -1 if not found.
+func FindHostTSSGID() (int, error) {
+	return findGroupGID("/etc/group", "tss")
+}
+
 // EnsureRenderGroup ensures a "render" group with the given GID exists in the container.
 // If the group is missing it is created; if it exists with a different GID it is modified.
 // If the target GID is already occupied by another group, that group is reassigned to a
 // free system GID first.
 func EnsureRenderGroup(r runner.Runner, rep reporter.Reporter, rootfsPath string, gid int) error {
+	return ensureGroup(r, rep, rootfsPath, "render", gid, false)
+}
+
+// EnsureTSSGroup ensures a "tss" group with the given GID exists in the container,
+// matching the host GID so that bind-mounted TPM devices are accessible.
+func EnsureTSSGroup(r runner.Runner, rep reporter.Reporter, rootfsPath string, gid int) error {
+	return ensureGroup(r, rep, rootfsPath, "tss", gid, true)
+}
+
+// ensureGroup ensures a group with the given name and GID exists in the container.
+// If system is true, the group is created with --system when missing.
+func ensureGroup(r runner.Runner, rep reporter.Reporter, rootfsPath, name string, gid int, system bool) error {
 	containerGroupPath := filepath.Join(rootfsPath, "etc", "group")
-	existingGID, err := findGroupGID(containerGroupPath, "render")
+	existingGID, err := findGroupGID(containerGroupPath, name)
 	if err != nil {
-		return fmt.Errorf("check container render group: %w", err)
+		return fmt.Errorf("check container %s group: %w", name, err)
 	}
 
 	if existingGID == gid {
@@ -286,7 +329,7 @@ func EnsureRenderGroup(r runner.Runner, rep reporter.Reporter, rootfsPath string
 	if err != nil {
 		return fmt.Errorf("check GID conflict: %w", err)
 	}
-	if conflicting != "" && conflicting != "render" {
+	if conflicting != "" && conflicting != name {
 		freeGID, err := findFreeSystemGID(containerGroupPath)
 		if err != nil {
 			return fmt.Errorf("find free GID for %s: %w", conflicting, err)
@@ -301,10 +344,14 @@ func EnsureRenderGroup(r runner.Runner, rep reporter.Reporter, rootfsPath string
 	gidStr := fmt.Sprintf("%d", gid)
 	if existingGID >= 0 {
 		return r.RunAttached("sudo", "systemd-nspawn", "--console=pipe", "-D", rootfsPath,
-			"groupmod", "--gid", gidStr, "render")
+			"groupmod", "--gid", gidStr, name)
 	}
-	return r.RunAttached("sudo", "systemd-nspawn", "--console=pipe", "-D", rootfsPath,
-		"groupadd", "--gid", gidStr, "render")
+	args := []string{"systemd-nspawn", "--console=pipe", "-D", rootfsPath, "groupadd"}
+	if system {
+		args = append(args, "--system")
+	}
+	args = append(args, "--gid", gidStr, name)
+	return r.RunAttached("sudo", args...)
 }
 
 // SELinuxEnabled reports whether SELinux is currently in enforcing or permissive mode.
@@ -429,7 +476,7 @@ func InstallPolkitRule(r runner.Runner, rulesDir string) error {
 // ProvisionContainer runs the shared provisioning sequence used by both init
 // and recreate: GPU render group setup, container user creation, fixups, and
 // polkit rule installation.
-func ProvisionContainer(r runner.Runner, rep reporter.Reporter, rootfsPath, username string, uid, gid int, hostname string) error {
+func ProvisionContainer(r runner.Runner, rep reporter.Reporter, rootfsPath, username string, uid, gid int, hostname string, authStack config.AuthStack) error {
 	// Ensure container has a render group matching the host for GPU access
 	if renderGID, err := FindHostRenderGID(); err == nil && renderGID >= 0 {
 		if clix.Verbose {
@@ -437,6 +484,18 @@ func ProvisionContainer(r runner.Runner, rep reporter.Reporter, rootfsPath, user
 		}
 		if err := EnsureRenderGroup(r, rep, rootfsPath, renderGID); err != nil {
 			rep.Warning("render group setup failed: %v", err)
+		}
+	}
+
+	// Ensure container has a tss group matching the host for TPM access
+	if authStack == config.AuthStackHimmelblau {
+		if tssGID, err := FindHostTSSGID(); err == nil && tssGID >= 0 {
+			if clix.Verbose {
+				rep.Message("Configuring TPM tss group...")
+			}
+			if err := EnsureTSSGroup(r, rep, rootfsPath, tssGID); err != nil {
+				rep.Warning("tss group setup failed: %v", err)
+			}
 		}
 	}
 
@@ -448,7 +507,7 @@ func ProvisionContainer(r runner.Runner, rep reporter.Reporter, rootfsPath, user
 	if clix.Verbose {
 		rep.Message("Applying fixups...")
 	}
-	if err := WriteFixups(r, rootfsPath, username, uid, gid, hostname+"LXC"); err != nil {
+	if err := WriteFixups(r, rootfsPath, username, uid, gid, hostname+"LXC", authStack); err != nil {
 		return err
 	}
 
@@ -457,6 +516,44 @@ func ProvisionContainer(r runner.Runner, rep reporter.Reporter, rootfsPath, user
 	}
 	if err := InstallPolkitRule(r, "/etc/polkit-1/rules.d"); err != nil {
 		rep.Warning("polkit install failed: %v", err)
+	}
+
+	return nil
+}
+
+// WriteHimmelblauConfig writes /etc/himmelblau/himmelblau.conf and
+// /etc/himmelblau/user-map into the rootfs for the Himmelblau auth stack.
+// domain is the Entra domain (e.g. "microsoft.com"), email is the user's
+// Entra email (e.g. "foo@microsoft.com"), and localUser is the container
+// username to map.
+func WriteHimmelblauConfig(r runner.Runner, rootfsPath, domain, email, localUser string) error {
+	confDir := filepath.Join(rootfsPath, "etc", "himmelblau")
+	if err := sudoMkdirAll(r, confDir); err != nil {
+		return fmt.Errorf("mkdir himmelblau config dir: %w", err)
+	}
+
+	conf := fmt.Sprintf(`[global]
+domain = %s
+enable_experimental_mfa = true
+enable_experimental_passwordless_fido = true
+apply_policy = true
+enable_experimental_intune_custom_compliance = true
+hsm_type = tpm
+join_type = register
+user_map_file = /etc/himmelblau/user-map
+local_groups = users
+home_attr = CN
+home_alias = CN
+use_etc_skel = true
+`, domain)
+
+	if err := sudo.WriteFile(r, filepath.Join(confDir, "himmelblau.conf"), []byte(conf), 0644); err != nil {
+		return fmt.Errorf("write himmelblau.conf: %w", err)
+	}
+
+	userMap := fmt.Sprintf("%s:%s\n", localUser, email)
+	if err := sudo.WriteFile(r, filepath.Join(confDir, "user-map"), []byte(userMap), 0644); err != nil {
+		return fmt.Errorf("write user-map: %w", err)
 	}
 
 	return nil

@@ -1,0 +1,101 @@
+#!/bin/bash
+set -ouex pipefail
+
+# Initial update
+apt update -y
+
+# Required repositories & supporting packages
+apt install -y \
+  curl \
+  gpg \
+  lsb-release
+
+# --- Microsoft Edge repository (kept for Edge browser support) ---
+curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > microsoft.gpg
+install -o root -g root -m 644 microsoft.gpg /usr/share/keyrings
+rm microsoft.gpg
+
+tee /etc/apt/sources.list.d/microsoft.sources > /dev/null << REPOEOF
+Types: deb
+URIs: https://packages.microsoft.com/repos/edge
+Suites: stable
+Components: main
+Architectures: $(dpkg --print-architecture)
+Signed-By: /usr/share/keyrings/microsoft.gpg
+REPOEOF
+
+# --- Himmelblau nightly repository ---
+curl -fsSL https://packages.himmelblau-idm.org/himmelblau.asc \
+  | gpg --dearmor > /usr/share/keyrings/himmelblau.gpg
+
+# The nightly repo uses a flat layout per distro version (e.g. ubuntu24.04/)
+DISTRO_VERSION="$(lsb_release -rs)"
+tee /etc/apt/sources.list.d/himmelblau.sources > /dev/null << REPOEOF
+Types: deb
+URIs: https://packages.himmelblau-idm.org/nightly/latest/deb/ubuntu${DISTRO_VERSION}
+Suites: ./
+Signed-By: /usr/share/keyrings/himmelblau.gpg
+REPOEOF
+
+apt update -y
+
+# Remove no longer needed packages
+apt remove -y \
+  curl \
+  gpg \
+  lsb-release
+apt autoremove -y
+apt upgrade -y
+
+# Required packages
+apt install -y --no-install-recommends \
+  unattended-upgrades \
+  himmelblau \
+  pam-himmelblau \
+  himmelblau-broker \
+  microsoft-edge-stable \
+  pipewire-audio-client-libraries \
+  mesa-vulkan-drivers \
+  mesa-va-drivers \
+  intel-media-va-driver \
+  xdg-desktop-portal-gtk \
+  pcscd \
+  yubikey-manager \
+  opensc \
+  libnss3-tools \
+  openssl \
+  libsecret-tools \
+  libpulse0 \
+  sudo \
+  upower
+
+# Microsoft Edge install adds a redundant .list file; remove it
+if [[ -f /etc/apt/sources.list.d/microsoft-edge.list ]]; then
+  rm /etc/apt/sources.list.d/microsoft-edge.list
+fi
+
+# Remove repo_reenable_on_distupgrade option that Edge adds
+if [[ -f /etc/default/microsoft-edge ]]; then
+  sed -i 's/^repo_reenable_on_distupgrade=true$/repo_reenable_on_distupgrade=false/' /etc/default/microsoft-edge
+fi
+
+# Configure PAM for Himmelblau in mapping/unseal mode.
+# Disable the full "himmelblau" auth profile (auto-enabled by the package) and
+# keep only "himmelblau-unseal" for password-based unlock without full Entra auth.
+pam-auth-update --disable himmelblau --force 2>/dev/null || true
+pam-auth-update --enable himmelblau-unseal mkhomedir gnome-keyring unix --force 2>/dev/null || true
+
+# Enable automatic updates for more than security patches
+sed -i '/Unattended-Upgrade::Allowed-Origins\s*{/{
+    :a
+    n
+    /^};/{
+        i\ \t"edge:stable";
+        b
+    }
+    ba
+}' /etc/apt/apt.conf.d/50unattended-upgrades
+
+# Enable required Himmelblau services
+systemctl enable himmelblaud.service
+systemctl enable himmelblaud-tasks.service

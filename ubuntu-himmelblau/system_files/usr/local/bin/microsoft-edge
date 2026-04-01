@@ -1,0 +1,17 @@
+#!/bin/sh -e
+
+# Container-safe: disable the GPU process sandbox which fails inside nspawn
+# (cannot create nested user namespaces). The renderer sandbox stays active.
+set -- '--disable-gpu-sandbox' "$@"
+
+if [ -n "$WAYLAND_DISPLAY" ]
+then
+    unset -v DISPLAY
+    set -- \
+        '--enable-features=UseOzonePlatform' \
+        '--enable-features=WebRTCPipeWireCapturer' \
+        '--ozone-platform=wayland' \
+        "$@"
+fi
+
+/usr/bin/microsoft-edge "$@"

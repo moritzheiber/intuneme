@@ -8,13 +8,39 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// AuthStack identifies which authentication stack the container uses.
+type AuthStack string
+
+const (
+	AuthStackIntune     AuthStack = "intune"
+	AuthStackHimmelblau AuthStack = "himmelblau"
+)
+
+// ValidAuthStacks returns the list of recognised auth stack values.
+func ValidAuthStacks() []AuthStack {
+	return []AuthStack{AuthStackIntune, AuthStackHimmelblau}
+}
+
+// IsValid returns true if the auth stack value is recognised.
+func (a AuthStack) IsValid() bool {
+	for _, v := range ValidAuthStacks() {
+		if a == v {
+			return true
+		}
+	}
+	return false
+}
+
 type Config struct {
-	MachineName string `toml:"machine_name"`
-	RootfsPath  string `toml:"rootfs_path"`
-	HostUID     int    `toml:"host_uid"`
-	HostUser    string `toml:"host_user"`
-	BrokerProxy bool   `toml:"broker_proxy"`
-	Insiders    bool   `toml:"insiders"`
+	MachineName      string    `toml:"machine_name"`
+	RootfsPath       string    `toml:"rootfs_path"`
+	HostUID          int       `toml:"host_uid"`
+	HostUser         string    `toml:"host_user"`
+	BrokerProxy      bool      `toml:"broker_proxy"`
+	Insiders         bool      `toml:"insiders"`
+	AuthStack        AuthStack `toml:"auth_stack"`
+	HimmelblauDomain string    `toml:"himmelblau_domain,omitempty"`
+	HimmelblauEmail  string    `toml:"himmelblau_email,omitempty"`
 }
 
 func DefaultRoot() (string, error) {
@@ -31,6 +57,7 @@ func Load(root string) (*Config, error) {
 		RootfsPath:  filepath.Join(root, "rootfs"),
 		HostUID:     os.Getuid(),
 		HostUser:    os.Getenv("USER"),
+		AuthStack:   AuthStackIntune,
 	}
 
 	path := filepath.Join(root, "config.toml")
@@ -41,6 +68,10 @@ func Load(root string) (*Config, error) {
 		// Ensure rootfs_path default if not in file
 		if cfg.RootfsPath == "" {
 			cfg.RootfsPath = filepath.Join(root, "rootfs")
+		}
+		// Default to intune for existing configs that predate the auth_stack field.
+		if cfg.AuthStack == "" {
+			cfg.AuthStack = AuthStackIntune
 		}
 	}
 

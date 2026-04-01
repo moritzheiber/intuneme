@@ -27,9 +27,10 @@ case "$ACTION" in
     MAJOR=$(stat -c '0x%t' "$DEVNODE" 2>/dev/null) || { log "add: cannot stat $DEVNODE"; exit 0; }
     MINOR=$(stat -c '0x%T' "$DEVNODE" 2>/dev/null) || exit 0
 
+    ESCAPED=$(systemd-escape "$MACHINE")
     # Allow the device in the container's cgroup. DevicePolicy=auto preserves
     # the existing nspawn device policy and adds our device on top.
-    systemctl set-property "machine-${MACHINE}.scope" DevicePolicy=auto "DeviceAllow=$DEVNODE rwm" 2>/dev/null || true
+    systemctl set-property "machine-${ESCAPED}.scope" DevicePolicy=auto "DeviceAllow=$DEVNODE rwm" 2>/dev/null || true
 
     # Create device node inside container.
     nsenter -t "$LEADER" -m -- mkdir -p "$(dirname "$DEVNODE")" 2>/dev/null || true

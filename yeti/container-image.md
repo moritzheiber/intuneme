@@ -1,4 +1,6 @@
-# Container Image (`ubuntu-intune/`)
+# Container Images
+
+This document covers the Intune container image (`ubuntu-intune/`). For the Himmelblau container image (`ubuntu-himmelblau/`), see the [Himmelblau image section](#himmelblau-image) at the end.
 
 The container image defines everything that runs inside the nspawn container. It's based on Ubuntu 24.04 LTS and built as a multi-stage OCI image.
 

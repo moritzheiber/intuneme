@@ -66,6 +66,16 @@ var startCmd = &cobra.Command{
 			sockets = append(sockets, nspawn.BindMount{Host: hostDir, Container: containerDir})
 		}
 
+		// Himmelblau uses TPM for key sealing; bind-mount TPM devices if present.
+		var tpmDevices []nspawn.BindMount
+		if cfg.AuthStack == config.AuthStackHimmelblau {
+			for _, dev := range []string{"/dev/tpm0", "/dev/tpmrm0"} {
+				if _, err := os.Stat(dev); err == nil {
+					tpmDevices = append(tpmDevices, nspawn.BindMount{Host: dev, Container: dev})
+				}
+			}
+		}
+
 		// Detect Nvidia GPU and prepare bind mounts.
 		var nvidiaDevices []nspawn.BindMount
 		var nvidiaLibs []nvidia.LibMapping
@@ -110,7 +120,9 @@ var startCmd = &cobra.Command{
 		}
 
 		rep.Message("Booting container...")
-		if err := nspawn.Boot(r, cfg.RootfsPath, cfg.MachineName, intuneHome, containerHome, sockets, nvidiaDevices); err != nil {
+		// TPM devices need DeviceAllow just like Nvidia devices.
+		deviceAllowMounts := append(nvidiaDevices, tpmDevices...)
+		if err := nspawn.Boot(r, cfg.RootfsPath, cfg.MachineName, intuneHome, containerHome, sockets, deviceAllowMounts); err != nil {
 			return fmt.Errorf("failed to start container: %w", err)
 		}
 

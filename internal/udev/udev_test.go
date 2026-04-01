@@ -226,6 +226,7 @@ func TestForwardDevice(t *testing.T) {
 	r := newMockRunner()
 	r.outputs["machinectl show"] = "12345"
 	r.outputs["stat -c"] = "0xbd 0x9"
+	r.outputs["systemd-escape"] = "intuneme"
 
 	err := ForwardDevice(r, "intuneme", "/dev/bus/usb/003/009")
 	if err != nil {
@@ -247,6 +248,7 @@ func TestForwardDeviceHidraw(t *testing.T) {
 	r := newMockRunner()
 	r.outputs["machinectl show"] = "12345"
 	r.outputs["stat -c"] = "0xa 0x3"
+	r.outputs["systemd-escape"] = "intuneme"
 
 	err := ForwardDevice(r, "intuneme", "/dev/hidraw3")
 	if err != nil {
@@ -273,6 +275,7 @@ func TestForwardDeviceVideoPermissions(t *testing.T) {
 	r := newMockRunner()
 	r.outputs["machinectl show"] = "12345"
 	r.outputs["stat -c"] = "0x51 0x0"
+	r.outputs["systemd-escape"] = "intuneme"
 
 	err := ForwardDevice(r, "intuneme", "/dev/video0")
 	if err != nil {
@@ -296,6 +299,7 @@ func TestForwardDeviceMediaPermissions(t *testing.T) {
 	r := newMockRunner()
 	r.outputs["machinectl show"] = "12345"
 	r.outputs["stat -c"] = "0x51 0x1"
+	r.outputs["systemd-escape"] = "intuneme"
 
 	err := ForwardDevice(r, "intuneme", "/dev/media0")
 	if err != nil {
@@ -308,6 +312,22 @@ func TestForwardDeviceMediaPermissions(t *testing.T) {
 	}
 	if !r.hasCommand("sudo nsenter -t 12345 -m -- chmod 0660 /dev/media0") {
 		t.Error("missing chmod 0660 for media device")
+	}
+}
+
+func TestForwardDeviceEscapedScope(t *testing.T) {
+	r := newMockRunner()
+	r.outputs["machinectl show"] = "12345"
+	r.outputs["stat -c"] = "0xbd 0x9"
+	r.outputs["systemd-escape"] = `intuneme\x2dhimmelblau`
+
+	err := ForwardDevice(r, "intuneme-himmelblau", "/dev/bus/usb/003/009")
+	if err != nil {
+		t.Fatalf("ForwardDevice failed: %v", err)
+	}
+
+	if !r.hasCommand(`sudo systemctl set-property machine-intuneme\x2dhimmelblau.scope DevicePolicy=auto DeviceAllow=/dev/bus/usb/003/009 rwm`) {
+		t.Error("scope name not properly escaped for hyphenated machine name")
 	}
 }
 

@@ -1,0 +1,34 @@
+# Allow build scripts to be referenced without being copied into the final image
+FROM scratch AS ctx
+COPY ubuntu-himmelblau/build_files /
+
+# Base Ubuntu Image
+FROM docker.io/library/ubuntu:24.04@sha256:cd1dba651b3080c3686ecf4e3c4220f026b521fb76978881737d24f200828b2b AS builder
+COPY ubuntu-himmelblau/system_files /
+
+# Build ubuntu-himmelblau
+ARG DEBIAN_FRONTEND=noninteractive
+ARG CHANNEL
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=cache,dst=/var/cache/apt \
+    --mount=type=cache,dst=/var/log \
+    --mount=type=cache,dst=/var/lib/apt \
+    --mount=type=cache,dst=/var/lib/dpkg/updates \
+    --mount=type=tmpfs,dst=/tmp \
+    /ctx/build && \
+    /ctx/chunk
+
+# https://github.com/coreos/chunkah
+FROM quay.io/jlebon/chunkah@sha256:9d0cb34737ca390df52be72beff22109e4f97f924e0cc155bfdb7e78410e2fc7 AS chunkah
+
+# Rechunk
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+RUN --mount=from=builder,src=/,target=/chunkah,ro \
+    --mount=type=bind,target=/run/src,rw \
+    chunkah build \
+    --max-layers 64 \
+    > /run/src/out.ociarchive
+
+# Deploy final chunked image
+FROM oci-archive:out.ociarchive

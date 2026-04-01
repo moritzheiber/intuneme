@@ -46,6 +46,46 @@ func TestImageRef(t *testing.T) {
 	}
 }
 
+func TestHimmelblauImageRef(t *testing.T) {
+	const registry = "ghcr.io/frostyard/ubuntu-himmelblau"
+
+	tests := []struct {
+		version  string
+		insiders bool
+		want     string
+	}{
+		{"dev", false, registry + ":latest"},
+		{"0.4.0", false, registry + ":v0.4.0"},
+		{"v0.4.0", false, registry + ":v0.4.0"},
+		{"dev", true, registry + ":insiders"},
+		{"0.4.0", true, registry + ":insiders"},
+	}
+
+	for _, tt := range tests {
+		name := "himmelblau/" + tt.version
+		if tt.insiders {
+			name += "/insiders"
+		}
+		t.Run(name, func(t *testing.T) {
+			Version = tt.version
+			got := HimmelblauImageRef(tt.insiders)
+			if got != tt.want {
+				t.Errorf("HimmelblauImageRef(%v) = %q, want %q", tt.insiders, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestImageRefForStack(t *testing.T) {
+	Version = "dev"
+	if got := ImageRefForStack("intune", false); !strings.HasPrefix(got, "ghcr.io/frostyard/ubuntu-intune:") {
+		t.Errorf("ImageRefForStack(intune) = %q, want ubuntu-intune prefix", got)
+	}
+	if got := ImageRefForStack("himmelblau", false); !strings.HasPrefix(got, "ghcr.io/frostyard/ubuntu-himmelblau:") {
+		t.Errorf("ImageRefForStack(himmelblau) = %q, want ubuntu-himmelblau prefix", got)
+	}
+}
+
 func FuzzImageRef(f *testing.F) {
 	f.Add("dev", false)
 	f.Add("v0.4.0", false)
@@ -64,6 +104,10 @@ func FuzzImageRef(f *testing.F) {
 		// Must always return a valid image reference starting with the base.
 		if !strings.HasPrefix(ref, "ghcr.io/frostyard/ubuntu-intune:") {
 			t.Errorf("ImageRef(%v) = %q, missing expected prefix", insiders, ref)
+		}
+		hRef := HimmelblauImageRef(insiders)
+		if !strings.HasPrefix(hRef, "ghcr.io/frostyard/ubuntu-himmelblau:") {
+			t.Errorf("HimmelblauImageRef(%v) = %q, missing expected prefix", insiders, hRef)
 		}
 	})
 }

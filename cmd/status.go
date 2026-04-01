@@ -64,6 +64,11 @@ var statusCmd = &cobra.Command{
 			channel = "insiders"
 		}
 
+		authStack := string(cfg.AuthStack)
+		if authStack == "" {
+			authStack = "intune"
+		}
+
 		if clix.OutputJSON(map[string]any{
 			"initialized":  true,
 			"root":         root,
@@ -71,6 +76,7 @@ var statusCmd = &cobra.Command{
 			"machine":      cfg.MachineName,
 			"container":    containerStatus,
 			"channel":      channel,
+			"auth_stack":   authStack,
 			"broker_proxy": brokerStatus,
 		}) {
 			return nil
@@ -81,6 +87,7 @@ var statusCmd = &cobra.Command{
 		rep.MessagePlain("Machine: %s", cfg.MachineName)
 		rep.MessagePlain("Container: %s", containerStatus)
 		rep.MessagePlain("Channel: %s", channel)
+		rep.MessagePlain("Auth stack: %s", authStack)
 
 		if cfg.BrokerProxy {
 			rep.MessagePlain("Broker proxy: %s", brokerStatus)

@@ -1,7 +1,7 @@
 # intuneme
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/frostyard/intuneme/badge)](https://scorecard.dev/viewer/?uri=github.com/frostyard/intuneme)
 
-`intuneme` provisions and manages a [systemd-nspawn](https://www.freedesktop.org/software/systemd/man/systemd-nspawn.html) container running Microsoft Intune on an immutable Linux host. The container handles enrollment, compliance, and corporate resource access while making minimal changes to the host.
+`intuneme` provisions and manages a [systemd-nspawn](https://www.freedesktop.org/software/systemd/man/systemd-nspawn.html) container running Microsoft Intune on an immutable Linux host. The container handles enrollment, compliance, and corporate resource access while making minimal changes to the host. Two authentication stacks are supported: **Intune** (Microsoft Identity Broker + Intune Portal) and **Himmelblau** (open-source Entra ID auth via [himmelblau](https://github.com/himmelblau-idm/himmelblau)).
 
 ## Features
 
@@ -10,6 +10,7 @@
 - Device hotplug — YubiKey and webcam passthrough via udev rules
 - GNOME Quick Settings extension for start/stop and app launch without a terminal
 - Desktop shortcuts for Microsoft Edge and Intune Portal
+- Himmelblau auth stack — alternative to Microsoft Identity Broker using open-source Entra ID tooling
 
 ## Documentation
 

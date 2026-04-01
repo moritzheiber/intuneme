@@ -24,6 +24,12 @@ var forceInit bool
 var passwordFile string
 var insidersInit bool
 var tmpDirInit string
+var authStackInit string
+var himmelblauDomain string
+var himmelblauEmail string
+var containerToolInit string
+var localImageInit bool
+var machineNameInit string
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -37,6 +43,30 @@ var initCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
+		}
+
+		// Validate auth stack flag.
+		stack := config.AuthStack(authStackInit)
+		if !stack.IsValid() {
+			return fmt.Errorf("invalid --auth-stack %q; must be one of: intune, himmelblau", authStackInit)
+		}
+
+		// Himmelblau requires --himmelblau-domain and --himmelblau-email.
+		if stack == config.AuthStackHimmelblau {
+			if himmelblauDomain == "" {
+				return fmt.Errorf("--himmelblau-domain is required when using --auth-stack himmelblau")
+			}
+			if himmelblauEmail == "" {
+				return fmt.Errorf("--himmelblau-email is required when using --auth-stack himmelblau")
+			}
+			if insidersInit {
+				return fmt.Errorf("--insiders is not available for the himmelblau auth stack")
+			}
+		}
+
+		// Validate machine name early (before password prompt).
+		if machineNameInit != "" && !isValidMachineName(machineNameInit) {
+			return fmt.Errorf("invalid machine name %q: use only letters, digits, and hyphens", machineNameInit)
 		}
 
 		// Check prerequisites
@@ -66,7 +96,7 @@ var initCmd = &cobra.Command{
 		}
 
 		if clix.DryRun {
-			rep.Message("[dry-run] Would pull OCI image and create container at %s", cfg.RootfsPath)
+			rep.Message("[dry-run] Would pull OCI image (%s stack) and create container at %s", stack, cfg.RootfsPath)
 			rep.Message("[dry-run] Would create container user %s", u.Username)
 			return nil
 		}
@@ -87,29 +117,53 @@ var initCmd = &cobra.Command{
 		}
 
 		cfg.Insiders = insidersInit
-		image := pkgversion.ImageRef(cfg.Insiders)
+		cfg.AuthStack = stack
+		if machineNameInit != "" {
+			cfg.MachineName = machineNameInit
+		}
+		if stack == config.AuthStackHimmelblau {
+			cfg.HimmelblauDomain = himmelblauDomain
+			cfg.HimmelblauEmail = himmelblauEmail
+		}
+		image := pkgversion.ImageRefForStack(string(stack), cfg.Insiders)
 
-		p, err := puller.Detect(r)
+		p, err := puller.DetectByName(r, containerToolInit)
 		if err != nil {
 			return err
 		}
 
-		rep.Message("Pulling and extracting OCI image %s (via %s)...", image, p.Name())
 		if err := os.MkdirAll(cfg.RootfsPath, 0755); err != nil {
 			return fmt.Errorf("create rootfs dir: %w", err)
 		}
-		if err := p.PullAndExtract(r, image, cfg.RootfsPath, tmpDirInit); err != nil {
-			return err
+		if localImageInit {
+			rep.Message("Extracting local image %s (via %s)...", image, p.Name())
+			if err := p.ExtractLocal(r, image, cfg.RootfsPath, tmpDirInit); err != nil {
+				return err
+			}
+		} else {
+			rep.Message("Pulling and extracting OCI image %s (via %s)...", image, p.Name())
+			if err := p.PullAndExtract(r, image, cfg.RootfsPath, tmpDirInit); err != nil {
+				return err
+			}
 		}
 
 		hostname, _ := os.Hostname()
 
-		if err := provision.ProvisionContainer(r, rep, cfg.RootfsPath, u.Username, os.Getuid(), os.Getgid(), hostname); err != nil {
+		if err := provision.ProvisionContainer(r, rep, cfg.RootfsPath, u.Username, os.Getuid(), os.Getgid(), hostname, stack); err != nil {
 			return err
 		}
 
+		// Write Himmelblau configuration files into rootfs.
+		if stack == config.AuthStackHimmelblau {
+			rep.Message("Writing Himmelblau configuration (domain: %s)...", cfg.HimmelblauDomain)
+			if err := provision.WriteHimmelblauConfig(r, cfg.RootfsPath, cfg.HimmelblauDomain, cfg.HimmelblauEmail, u.Username); err != nil {
+				return fmt.Errorf("write himmelblau config: %w", err)
+			}
+		}
+
 		rep.Message("Setting container user password...")
-		if err := provision.SetContainerPassword(r, cfg.RootfsPath, u.Username, password); err != nil {
+		bypassPAM := stack == config.AuthStackHimmelblau
+		if err := provision.SetContainerPassword(r, cfg.RootfsPath, u.Username, password, bypassPAM); err != nil {
 			return fmt.Errorf("set password failed: %w", err)
 		}
 
@@ -138,7 +192,18 @@ var initCmd = &cobra.Command{
 			return err
 		}
 
-		rep.Message("Initialized intuneme at %s", root)
+		rep.Message("Initialized intuneme at %s (auth stack: %s)", root, cfg.AuthStack)
+		if cfg.AuthStack == config.AuthStackHimmelblau {
+			rep.Message("")
+			rep.Message("Next steps for Himmelblau enrollment:")
+			rep.Message("  1. Start the container: intuneme start")
+			rep.Message("  2. Open a shell: intuneme shell")
+			rep.Message("  3. Enroll with: aad-tool auth-test --name %s", u.Username)
+			rep.Message("  4. Follow the FIDO2/MFA prompts to complete enrollment")
+			rep.Message("")
+			rep.Message("Tip: use the same password as your container user for the Himmelblau PIN")
+			rep.Message("     to enable auto-unlock on login.")
+		}
 		return nil
 	},
 }
@@ -232,10 +297,33 @@ func readPassword(username, passwordFile string) (string, error) {
 	return "", fmt.Errorf("passwords did not match after 3 attempts")
 }
 
+// isValidMachineName checks that a machine name is a valid hostname label:
+// letters, digits, and hyphens, not starting or ending with a hyphen.
+func isValidMachineName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return false
+	}
+	for _, r := range name {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
 func init() {
 	initCmd.Flags().BoolVar(&forceInit, "force", false, "reinitialize even if already set up")
 	initCmd.Flags().StringVar(&passwordFile, "password-file", "", "path to file containing the container user password (first line used)")
 	initCmd.Flags().BoolVar(&insidersInit, "insiders", false, "use the insiders channel container image")
 	initCmd.Flags().StringVar(&tmpDirInit, "tmp-dir", "", "directory for temporary files during image extraction (default: system temp dir)")
+	initCmd.Flags().StringVar(&authStackInit, "auth-stack", "intune", "authentication stack: intune or himmelblau")
+	initCmd.Flags().StringVar(&himmelblauDomain, "himmelblau-domain", "", "Entra domain for Himmelblau enrollment (required with --auth-stack himmelblau)")
+	initCmd.Flags().StringVar(&himmelblauEmail, "himmelblau-email", "", "Entra email address for Himmelblau user mapping (required with --auth-stack himmelblau)")
+	initCmd.Flags().StringVar(&containerToolInit, "container-tool", "", "container tool to use for image operations: podman, docker, or skopeo (default: auto-detect)")
+	initCmd.Flags().BoolVar(&localImageInit, "local-image", false, "use a locally available image instead of pulling from the registry")
+	initCmd.Flags().StringVar(&machineNameInit, "machine-name", "", "container machine name (default: intuneme)")
 	rootCmd.AddCommand(initCmd)
 }

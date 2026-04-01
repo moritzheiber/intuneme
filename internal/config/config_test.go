@@ -78,6 +78,60 @@ func TestLoadBrokerProxyDefault(t *testing.T) {
 	}
 }
 
+func TestLoadAuthStackDefault(t *testing.T) {
+	tmp := t.TempDir()
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.AuthStack != AuthStackIntune {
+		t.Errorf("AuthStack = %q, want %q", cfg.AuthStack, AuthStackIntune)
+	}
+}
+
+func TestLoadAuthStackHimmelblau(t *testing.T) {
+	tmp := t.TempDir()
+	toml := "auth_stack = \"himmelblau\"\n"
+	if err := os.WriteFile(filepath.Join(tmp, "config.toml"), []byte(toml), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.AuthStack != AuthStackHimmelblau {
+		t.Errorf("AuthStack = %q, want %q", cfg.AuthStack, AuthStackHimmelblau)
+	}
+}
+
+func TestLoadOldConfigDefaultsToIntune(t *testing.T) {
+	tmp := t.TempDir()
+	// Config file without auth_stack field (simulates pre-Himmelblau config)
+	toml := "machine_name = \"intuneme\"\n"
+	if err := os.WriteFile(filepath.Join(tmp, "config.toml"), []byte(toml), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg, err := Load(tmp)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if cfg.AuthStack != AuthStackIntune {
+		t.Errorf("AuthStack = %q, want %q", cfg.AuthStack, AuthStackIntune)
+	}
+}
+
+func TestAuthStackIsValid(t *testing.T) {
+	if !AuthStackIntune.IsValid() {
+		t.Error("intune should be valid")
+	}
+	if !AuthStackHimmelblau.IsValid() {
+		t.Error("himmelblau should be valid")
+	}
+	if AuthStack("bogus").IsValid() {
+		t.Error("bogus should not be valid")
+	}
+}
+
 func TestLoadInsiders(t *testing.T) {
 	tmp := t.TempDir()
 	toml := "insiders = true\n"

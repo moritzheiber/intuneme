@@ -2,7 +2,7 @@
 
 ## Purpose
 
-intuneme is a Go CLI tool that provisions and manages a `systemd-nspawn` container running Microsoft Intune on immutable Linux hosts. It isolates Intune Portal, Microsoft Edge, and the Microsoft identity broker inside a container while providing transparent access to host display, audio, GPU, and USB devices via bind mounts and namespace forwarding.
+intuneme is a Go CLI tool that provisions and manages a `systemd-nspawn` container running Microsoft Intune (or Himmelblau) on immutable Linux hosts. It isolates the enrollment stack, Microsoft Edge, and the identity broker inside a container while providing transparent access to host display, audio, GPU, and USB devices via bind mounts and namespace forwarding. Two auth stacks are supported: **Intune** (Microsoft Identity Broker + Intune Portal) and **Himmelblau** (open-source Entra ID auth via [himmelblau-idm/himmelblau](https://github.com/himmelblau-idm/himmelblau)).
 
 The tool handles the full container lifecycle — init, start, stop, destroy, recreate — with minimal host modifications (a polkit rule, a sudoers rule, and udev rules while running). `destroy --all` performs a full uninstall of all artifacts.
 
@@ -23,11 +23,15 @@ internal/
 ├── sudo/             Helper for writing files via temp file + sudo install (used by provision, nspawn, udev)
 ├── sudoers/          Sudoers rule install/remove for passwordless nsenter
 ├── udev/             Udev rules + hotplug script for YubiKey and video devices
-└── version/          Build version + OCI image ref resolution
-ubuntu-intune/        Container image definition
+└── version/          Build version + OCI image ref resolution (supports both ubuntu-intune and ubuntu-himmelblau)
+ubuntu-intune/        Container image for Intune auth stack
 ├── Containerfile     Multi-stage build (Ubuntu 24.04 base)
 ├── build_files/      Build script (package install, PAM config, patches)
 └── system_files/     Static config files copied into image
+ubuntu-himmelblau/    Container image for Himmelblau auth stack
+├── Containerfile     Multi-stage build (Ubuntu 24.04 base)
+├── build_files/      Build script (Himmelblau nightly packages, PAM unlock mode)
+└── system_files/     Static config files copied into image (shared base + Himmelblau services)
 polkit/               Polkit rule reference for machinectl access (actual rule generated inline)
 scripts/              Build helpers (completions, manpages, SELinux, desktop files)
 site/                 MkDocs documentation site content (user-facing)
@@ -39,9 +43,21 @@ mkdocs.yml            MkDocs config (materialx theme, published to GitHub Pages)
 | Component | Role |
 |-----------|------|
 | **Go CLI** (`cmd/`, `internal/`) | Container lifecycle, host-specific setup (user creation, hostname, polkit, sudoers) |
-| **Container image** (`ubuntu-intune/`) | Static content: packages, systemd overrides, PAM config, Edge wrapper |
+| **Container image (Intune)** (`ubuntu-intune/`) | Static content: MS Identity Broker, Intune Portal, Edge, systemd overrides, PAM config |
+| **Container image (Himmelblau)** (`ubuntu-himmelblau/`) | Static content: Himmelblau daemons, Himmelblau broker, Edge, systemd overrides, PAM unlock config |
 
-**Rule of thumb:** If something is static and doesn't depend on the host, it belongs in `ubuntu-intune/`. If it depends on the host user/UID/hostname, it stays in `internal/provision/`.
+**Rule of thumb:** If something is static and doesn't depend on the host, it belongs in the container image directory. If it depends on the host user/UID/hostname, it stays in `internal/provision/`.
+
+### Auth Stack
+
+The `auth_stack` config field (set at `init` time via `--auth-stack`) determines:
+- Which OCI image is pulled (`ubuntu-intune` vs `ubuntu-himmelblau`)
+- Which profile script is embedded (`intuneme-profile.sh` vs `himmelblau-profile.sh`)
+- Whether TPM devices are bind-mounted (Himmelblau uses `hsm_type = tpm`)
+- Which enrollment state is backed up during `recreate` (`microsoft-identity-device-broker` vs `himmelblau`)
+- Which services are restarted in the profile script (identity broker vs himmelblau-broker)
+
+The broker proxy works identically for both stacks — both expose `com.microsoft.identity.broker1` on D-Bus.
 
 ## Key Patterns
 
@@ -192,10 +208,11 @@ All shell commands go through the `runner.Runner` interface (`internal/runner/`)
 
 ### OCI Image Resolution
 
-`version.ImageRef()` resolves the container image tag from the build version:
-- Insiders channel → `ghcr.io/frostyard/ubuntu-intune:insiders`
-- Clean semver (e.g., v1.2.3) → `ghcr.io/frostyard/ubuntu-intune:v1.2.3`
-- Dev builds → `ghcr.io/frostyard/ubuntu-intune:latest`
+`version.ImageRefForStack()` resolves the container image tag based on auth stack and build version:
+- Intune: `ghcr.io/frostyard/ubuntu-intune:{tag}`
+- Himmelblau: `ghcr.io/frostyard/ubuntu-himmelblau:{tag}`
+
+Tag resolution: insiders → `:insiders`, clean semver → `:v1.2.3`, dev builds → `:latest`
 
 ### Image Pull Strategy
 
@@ -228,6 +245,7 @@ Single TOML file at `~/.local/share/intuneme/config.toml`:
 | `host_user` | string | Host username |
 | `broker_proxy` | bool | Enable D-Bus broker proxy for host-side SSO |
 | `insiders` | bool | Use insiders channel image |
+| `auth_stack` | string | Authentication stack: `intune` (default) or `himmelblau` |
 
 The `--root` persistent flag overrides the default data directory (`~/.local/share/intuneme`). `config.DefaultRoot()` returns `(string, error)` — it propagates `os.UserHomeDir()` errors rather than silently producing a relative path, preventing accidental destructive operations (e.g., `sudo rm -rf` on a relative path) when `$HOME` is unset.
 
@@ -291,3 +309,30 @@ The project has a MkDocs documentation site (`site/` directory, `mkdocs.yml`) pu
 - [Container Lifecycle](container-lifecycle.md) — init, start, stop, destroy, recreate flows
 - [Broker Proxy](broker-proxy.md) — D-Bus forwarding for host-side SSO
 - [Container Image](container-image.md) — Build process, packages, and system configuration
+
+## Himmelblau-Specific Notes
+
+### Container Image Differences (ubuntu-himmelblau)
+
+- Packages: `himmelblau`, `pam-himmelblau`, `himmelblau-broker` from community nightly repo (no `microsoft-identity-broker`, no `intune-portal`)
+- Edge is kept for browser access
+- PAM: `himmelblau-unlock` profile (mapping mode, not full Entra auth)
+- Systemd: `himmelblaud.service` and `himmelblaud-tasks.service` instead of `microsoft-identity-device-broker.service`
+- No password complexity enforcement via pam_pwquality (Himmelblau enforces server-side)
+
+### Provisioning
+
+When `auth_stack = himmelblau`, `init` additionally writes:
+- `/etc/himmelblau/himmelblau.conf` — domain, HSM type (tpm), join type (register), user mapping config
+- `/etc/himmelblau/user-map` — maps local container user to Entra email
+
+TPM devices (`/dev/tpm0`, `/dev/tpmrm0`) are bind-mounted during `start` for key sealing.
+
+### Enrollment
+
+Himmelblau enrollment is interactive and done manually after init:
+1. `intuneme start`
+2. `intuneme shell`
+3. `aad-tool auth-test --name <username>` — sets up PIN, authenticates via FIDO2
+
+Enrollment state lives in `/var/lib/himmelblau/` and is backed up/restored by `recreate`.

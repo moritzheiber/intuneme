@@ -17,6 +17,8 @@ type Puller interface {
 	// tmpDir overrides the directory used for intermediate files (e.g. exported
 	// tars). When empty, os.TempDir() is used.
 	PullAndExtract(r runner.Runner, image string, rootfsPath string, tmpDir string) error
+	// ExtractLocal extracts a locally available image to rootfsPath without pulling.
+	ExtractLocal(r runner.Runner, image string, rootfsPath string, tmpDir string) error
 }
 
 // resolveTmpDir returns tmpDir when non-empty, otherwise os.TempDir().
@@ -42,6 +44,36 @@ func Detect(r runner.Runner) (Puller, error) {
 		return NewDockerPuller(), nil
 	}
 	return nil, fmt.Errorf("no container tool found; install podman, skopeo+umoci, or docker")
+}
+
+// DetectByName returns a Puller for the given tool name, or falls back to
+// auto-detection when name is empty. Valid names: podman, docker, skopeo.
+func DetectByName(r runner.Runner, name string) (Puller, error) {
+	if name == "" {
+		return Detect(r)
+	}
+	switch name {
+	case "podman":
+		if _, err := r.LookPath("podman"); err != nil {
+			return nil, fmt.Errorf("podman not found in PATH")
+		}
+		return NewPodmanPuller(), nil
+	case "docker":
+		if _, err := r.LookPath("docker"); err != nil {
+			return nil, fmt.Errorf("docker not found in PATH")
+		}
+		return NewDockerPuller(), nil
+	case "skopeo":
+		if _, err := r.LookPath("skopeo"); err != nil {
+			return nil, fmt.Errorf("skopeo not found in PATH")
+		}
+		if _, err := r.LookPath("umoci"); err != nil {
+			return nil, fmt.Errorf("umoci not found in PATH (required with skopeo)")
+		}
+		return &SkopeoPuller{}, nil
+	default:
+		return nil, fmt.Errorf("unknown container tool %q; must be one of: podman, docker, skopeo", name)
+	}
 }
 
 // containerToolPuller implements the create→export→tar-extract→rm workflow
@@ -99,6 +131,35 @@ func (c *containerToolPuller) PullAndExtract(r runner.Runner, image string, root
 	return nil
 }
 
+// ExtractLocal extracts a locally available image without pulling from a registry.
+func (c *containerToolPuller) ExtractLocal(r runner.Runner, image string, rootfsPath string, tmpDir string) error {
+	_, _ = r.Run(c.tool, "rm", "intuneme-extract")
+
+	out, err := r.Run(c.tool, "create", "--name", "intuneme-extract", image, "/bin/true")
+	if err != nil {
+		return fmt.Errorf("%s create failed (is the image available locally?): %w\n%s", c.tool, err, out)
+	}
+
+	tmpTar := filepath.Join(resolveTmpDir(tmpDir), "intuneme-rootfs.tar")
+	out, err = r.Run(c.tool, "export", "-o", tmpTar, "intuneme-extract")
+	if err != nil {
+		_, _ = r.Run(c.tool, "rm", "intuneme-extract")
+		return fmt.Errorf("%s export failed: %w\n%s", c.tool, err, out)
+	}
+	defer func() { _ = os.Remove(tmpTar) }()
+
+	if err := r.RunAttached("sudo", "tar", "-xf", tmpTar, "-C", rootfsPath); err != nil {
+		_, _ = r.Run(c.tool, "rm", "intuneme-extract")
+		return fmt.Errorf("extract rootfs failed: %w", err)
+	}
+
+	out, err = r.Run(c.tool, "rm", "intuneme-extract")
+	if err != nil {
+		return fmt.Errorf("%s rm failed: %w\n%s", c.tool, err, out)
+	}
+	return nil
+}
+
 // PodmanPuller pulls and extracts using podman.
 // For locally-built images (localhost/ prefix) it uses --policy=missing so
 // podman doesn't try to reach a registry that doesn't exist.
@@ -120,6 +181,11 @@ func NewPodmanPuller() *PodmanPuller {
 type SkopeoPuller struct{}
 
 func (p *SkopeoPuller) Name() string { return "skopeo+umoci" }
+
+// ExtractLocal is not supported for skopeo+umoci (images live in OCI layout, not a local store).
+func (p *SkopeoPuller) ExtractLocal(_ runner.Runner, _ string, _ string, _ string) error {
+	return fmt.Errorf("--local-image is not supported with skopeo+umoci; use podman or docker")
+}
 
 func (p *SkopeoPuller) PullAndExtract(r runner.Runner, image string, rootfsPath string, tmpDir string) error {
 	// Create a temp directory for the OCI layout

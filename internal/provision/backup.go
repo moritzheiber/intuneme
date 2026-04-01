@@ -13,6 +13,7 @@ import (
 )
 
 const deviceBrokerRelPath = "var/lib/microsoft-identity-device-broker"
+const himmelblauStateRelPath = "var/lib/himmelblau"
 
 // BackupDeviceBrokerState copies the device broker state directory from the
 // rootfs to a temporary directory. Returns the temp directory path, or ""
@@ -96,4 +97,37 @@ func RestoreShadowEntry(r runner.Runner, rootfs, shadowLine string) error {
 	}
 
 	return sudo.WriteFile(r, shadowPath, []byte(strings.Join(lines, "\n")), 0640)
+}
+
+// BackupHimmelblauState copies the Himmelblau state directory from the
+// rootfs to a temporary directory. Returns the temp directory path, or ""
+// if the directory doesn't exist (no enrollment to preserve).
+func BackupHimmelblauState(r runner.Runner, rootfs string) (string, error) {
+	stateDir := filepath.Join(rootfs, himmelblauStateRelPath)
+	if _, err := os.Stat(stateDir); errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "intuneme-himmelblau-backup-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+
+	dest := filepath.Join(tmpDir, "himmelblau")
+	if _, err := r.Run("sudo", "cp", "-a", stateDir, dest); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("backup himmelblau state: %w", err)
+	}
+	return tmpDir, nil
+}
+
+// RestoreHimmelblauState copies the backed-up Himmelblau state back
+// into the new rootfs.
+func RestoreHimmelblauState(r runner.Runner, rootfs, backupDir string) error {
+	src := filepath.Join(backupDir, "himmelblau")
+	dest := filepath.Join(rootfs, himmelblauStateRelPath)
+	if _, err := r.Run("sudo", "cp", "-a", src, dest); err != nil {
+		return fmt.Errorf("restore himmelblau state: %w", err)
+	}
+	return nil
 }

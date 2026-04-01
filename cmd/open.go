@@ -48,16 +48,54 @@ func makeOpenAppCmd(use, short, command string) *cobra.Command {
 	}
 }
 
+func makeAuthStackAppCmd(use, short, command string, requiredStack config.AuthStack) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			r := &runner.SystemRunner{}
+			root := rootDir
+			if root == "" {
+				var err error
+				root, err = config.DefaultRoot()
+				if err != nil {
+					return err
+				}
+			}
+
+			cfg, err := config.Load(root)
+			if err != nil {
+				return err
+			}
+
+			if _, err := os.Stat(cfg.RootfsPath); err != nil {
+				return fmt.Errorf("not initialized — run 'intuneme init' first")
+			}
+
+			if cfg.AuthStack != requiredStack {
+				return fmt.Errorf("this command requires the %s auth stack (current: %s)", requiredStack, cfg.AuthStack)
+			}
+
+			if !nspawn.IsRunning(r, cfg.MachineName) {
+				return fmt.Errorf("container is not running — run 'intuneme start' first")
+			}
+
+			return nspawn.Exec(r, cfg.MachineName, cfg.HostUser, cfg.HostUID, command)
+		},
+	}
+}
+
 func init() {
 	openCmd.AddCommand(makeOpenAppCmd(
 		"edge",
 		"Launch Microsoft Edge inside the container",
 		"microsoft-edge",
 	))
-	openCmd.AddCommand(makeOpenAppCmd(
+	openCmd.AddCommand(makeAuthStackAppCmd(
 		"portal",
 		"Launch Intune Portal inside the container",
 		"intune-portal",
+		config.AuthStackIntune,
 	))
 	rootCmd.AddCommand(openCmd)
 }
