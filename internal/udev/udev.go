@@ -236,6 +236,10 @@ func ForwardDevice(r runner.Runner, machine, devnode string) error {
 	if err != nil {
 		return err
 	}
+	unit, err := nspawn.MachineUnit(r, machine)
+	if err != nil {
+		return err
+	}
 
 	// Get major:minor of the device.
 	out, err := r.Run("stat", "-c", "0x%t 0x%T", devnode)
@@ -248,15 +252,10 @@ func ForwardDevice(r runner.Runner, machine, devnode string) error {
 	}
 	major, minor := parts[0], parts[1]
 
-	scope, err := machineScope(r, machine)
-	if err != nil {
-		return err
-	}
-
 	// Allow the device in the container's cgroup. DevicePolicy=auto preserves
 	// the existing nspawn device policy and adds our device on top.
 	if _, err := r.Run("sudo", "systemctl", "set-property",
-		scope,
+		unit,
 		"DevicePolicy=auto",
 		fmt.Sprintf("DeviceAllow=%s rwm", devnode)); err != nil {
 		return fmt.Errorf("cgroup DeviceAllow for %s: %w", devnode, err)
@@ -296,15 +295,6 @@ func ForwardDevice(r runner.Runner, machine, devnode string) error {
 	_ = sudo.WriteFile(r, stateFile, []byte(devnode+"\n"), 0644)
 
 	return nil
-}
-
-// machineScope returns the systemd scope unit name for the given machine.
-func machineScope(r runner.Runner, machine string) (string, error) {
-	out, err := r.Run("systemd-escape", machine)
-	if err != nil {
-		return "", fmt.Errorf("systemd-escape %s: %w", machine, err)
-	}
-	return fmt.Sprintf("machine-%s.scope", strings.TrimSpace(string(out))), nil
 }
 
 // isVideoDevice reports whether the device path is a video or media controller device.

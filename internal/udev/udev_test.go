@@ -224,7 +224,8 @@ func TestScriptPath(t *testing.T) {
 
 func TestForwardDevice(t *testing.T) {
 	r := newMockRunner()
-	r.outputs["machinectl show"] = "12345"
+	r.outputs["machinectl show intuneme -p Leader --value"] = "12345"
+	r.outputs["machinectl show intuneme -p Unit --value"] = "intuneme.scope"
 	r.outputs["stat -c"] = "0xbd 0x9"
 	r.outputs["systemd-escape"] = "intuneme"
 
@@ -234,7 +235,7 @@ func TestForwardDevice(t *testing.T) {
 	}
 
 	// Should set cgroup for USB devices too (runtime DeviceAllow is additive).
-	if !r.hasCommand("sudo systemctl set-property machine-intuneme.scope DevicePolicy=auto DeviceAllow=/dev/bus/usb/003/009 rwm") {
+	if !r.hasCommand("sudo systemctl set-property intuneme.scope DevicePolicy=auto DeviceAllow=/dev/bus/usb/003/009 rwm") {
 		t.Error("missing cgroup set-property for USB device")
 	}
 
@@ -246,7 +247,8 @@ func TestForwardDevice(t *testing.T) {
 
 func TestForwardDeviceHidraw(t *testing.T) {
 	r := newMockRunner()
-	r.outputs["machinectl show"] = "12345"
+	r.outputs["machinectl show intuneme -p Leader --value"] = "12345"
+	r.outputs["machinectl show intuneme -p Unit --value"] = "intuneme.scope"
 	r.outputs["stat -c"] = "0xa 0x3"
 	r.outputs["systemd-escape"] = "intuneme"
 
@@ -256,7 +258,7 @@ func TestForwardDeviceHidraw(t *testing.T) {
 	}
 
 	// Should set cgroup for hidraw device.
-	if !r.hasCommand("sudo systemctl set-property machine-intuneme.scope DevicePolicy=auto DeviceAllow=/dev/hidraw3 rwm") {
+	if !r.hasCommand("sudo systemctl set-property intuneme.scope DevicePolicy=auto DeviceAllow=/dev/hidraw3 rwm") {
 		t.Error("missing cgroup set-property for hidraw")
 	}
 }
@@ -273,7 +275,8 @@ func TestForwardDeviceContainerNotRunning(t *testing.T) {
 
 func TestForwardDeviceVideoPermissions(t *testing.T) {
 	r := newMockRunner()
-	r.outputs["machinectl show"] = "12345"
+	r.outputs["machinectl show intuneme -p Leader --value"] = "12345"
+	r.outputs["machinectl show intuneme -p Unit --value"] = "intuneme.scope"
 	r.outputs["stat -c"] = "0x51 0x0"
 	r.outputs["systemd-escape"] = "intuneme"
 
@@ -297,7 +300,8 @@ func TestForwardDeviceVideoPermissions(t *testing.T) {
 
 func TestForwardDeviceMediaPermissions(t *testing.T) {
 	r := newMockRunner()
-	r.outputs["machinectl show"] = "12345"
+	r.outputs["machinectl show intuneme -p Leader --value"] = "12345"
+	r.outputs["machinectl show intuneme -p Unit --value"] = "intuneme.scope"
 	r.outputs["stat -c"] = "0x51 0x1"
 	r.outputs["systemd-escape"] = "intuneme"
 
