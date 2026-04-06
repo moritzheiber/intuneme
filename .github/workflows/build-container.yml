@@ -201,10 +201,10 @@ jobs:
           OCI_DIR: "/tmp/image-oci-dir"
         run: |
           mkdir -p ${OCI_DIR}/rootfs
-          sudo podman container create --replace --name "${IMAGE_NAME}" \
+          podman container create --replace --name "${IMAGE_NAME}" \
             "localhost/${IMAGE_NAME}:${DEFAULT_TAG}"
-          sudo podman export "${IMAGE_NAME}" | sudo tar -C ${OCI_DIR}/rootfs -xf -
-          sudo podman container rm "${IMAGE_NAME}"
+          podman export "${IMAGE_NAME}" | sudo tar -C ${OCI_DIR}/rootfs -xf -
+          podman container rm "${IMAGE_NAME}"
           SBOM="$(mktemp -d)/sbom.json"
           export SYFT_PARALLELISM=$(($(nproc)*2))
           sudo $SYFT_CMD --source-name "${IMAGE_NAME}" \
