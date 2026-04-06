@@ -60,6 +60,12 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+sboms:
+  - artifacts: archive
+    documents:
+      - >-
+        {{ .ArtifactName }}.sbom.json
+
 signs:
   - cmd: cosign
     signature: "${artifact}.sigstore"
@@ -144,6 +150,12 @@ release:
 
     ```bash
     cosign verify --key ubuntu-intune/cosign.pub ghcr.io/frostyard/ubuntu-intune:<version>
+    ```
+
+    ### SBOM
+
+    ```bash
+    cat <artifact>.sbom.json | jq '.artifacts[].packages'
     ```
 
     ---
