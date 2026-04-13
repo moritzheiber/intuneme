@@ -49,7 +49,6 @@ apt upgrade -y
 apt install -y \
   unattended-upgrades \
   microsoft-identity-broker \
-  microsoft-edge-stable \
   pipewire-audio-client-libraries \
   mesa-vulkan-drivers \
   mesa-va-drivers \
@@ -66,6 +65,21 @@ apt install -y \
   cracklib-runtime \
   upower
 
+# Edge needs fixes to install properly
+# Download Edge deb without installing
+apt download microsoft-edge-stable
+mv microsoft-edge-stable_*.deb /tmp/edge.deb
+
+# Extract, strip the postinst that calls apt-config
+dpkg-deb -R /tmp/edge.deb /tmp/edge-unpacked
+
+# Remove the postinst step that causes it to break when installing inside the container
+sed -i -e '/^install_key$/d' -e '/^install_deb822_sources$/d' /tmp/edge-unpacked/DEBIAN/postinst 
+dpkg-deb -b /tmp/edge-unpacked /tmp/edge-fixed.deb
+
+# Install the patched package
+apt-get install -y /tmp/edge-fixed.deb
+
 # Microsoft Edge install adds a redundant .list file; remove it
 if [[ -f /etc/apt/sources.list.d/microsoft-edge.list ]]; then
   rm /etc/apt/sources.list.d/microsoft-edge.list
@@ -77,10 +91,6 @@ if [[ -f /etc/default/microsoft-edge ]]; then
 fi
 
 # Intune needs fixes to install properly
-# Install its dependencies first
-apt-get install -y --no-install-recommends \
-    $(apt-cache depends intune-portal | awk '/Depends:/{print $2}')
-
 # Download and extract the Intune package
 apt download intune-portal
 mv intune-portal_*.deb /tmp/
@@ -91,7 +101,7 @@ sed -i '/systemctl restart polkit\.service 2>\/dev\/null/d' /tmp/intune-unpacked
 dpkg-deb -b /tmp/intune-unpacked/ /tmp/intune-portal-fixed.deb
 
 # Install patched Intune
-dpkg -i /tmp/intune-portal-fixed.deb
+apt-get install -y /tmp/intune-portal-fixed.deb
 
 # Restore custom pwquality PAM profile (package install overwrites the one from system_files)
 tee /usr/share/pam-configs/pwquality > /dev/null << 'PAMEOF'
